@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const {
-      message = "How do I turn on the website blocker for FocusFlow?",
+      message = "How do I install FocusFlow?",
       from = "+14155552671",
       userName = "Alex Rivera",
     } = body;
@@ -30,39 +30,25 @@ export async function POST(req: NextRequest) {
       details: { simulation: true },
     });
 
-    // 2. Simulate delivered status
-    setTimeout(() => {
-      botStore.addLog({
-        timestamp: new Date().toISOString(),
-        method: "POST",
-        endpoint: "/api/webhook",
-        type: "message_status",
-        status: 200,
-        payloadSummary: `Message status: 'delivered' to recipient ${from}`,
-        to: from,
-        messageId,
-        details: { status: "delivered", simulation: true },
-      });
-    }, 500);
-
-    // 3. Process with Gemini
+    // 2. Process with situation-aware Gemini (gemini-3.1-flash-lite)
     const botResult = await generateSupportReply(from, message, userName);
 
-    // 4. Dispatch (will use real Meta API if WHATSAPP_TOKEN is configured, or simulate)
+    // 3. Dispatch (calls real Meta API or logs)
     const dispatchResult = await sendWhatsAppTextMessage(from, botResult.replyText);
 
-    // 5. Log reply
+    // 4. Log reply
     botStore.addLog({
       timestamp: new Date().toISOString(),
       method: "POST",
       endpoint: "/api/webhook",
       type: "incoming_message",
       status: 200,
-      payloadSummary: `FocusFlow Bot reply sent: "${botResult.replyText.slice(0, 90)}..."`,
+      payloadSummary: `FocusFlow Bot reply (${botResult.modelUsed}): "${botResult.replyText.slice(0, 90)}..."`,
       to: from,
       messageId: dispatchResult.messageId,
       details: {
-        ticket: botResult.detectedTicket,
+        modelUsed: botResult.modelUsed,
+        totalTokens: botResult.totalTokens,
         mode: dispatchResult.mode,
         simulation: true,
       },
@@ -71,7 +57,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       replyText: botResult.replyText,
-      ticket: botResult.detectedTicket,
+      modelUsed: botResult.modelUsed,
+      totalTokens: botResult.totalTokens,
       messageId,
       dispatchMode: dispatchResult.mode,
     });

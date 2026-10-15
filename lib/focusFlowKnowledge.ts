@@ -1,158 +1,53 @@
 /**
- * FocusFlow Product Knowledge Base & Support Guidelines
- * Used by Gemini AI to answer customer inquiries and triage bug reports.
+ * Verified FocusFlow Knowledge Base & Support Guidelines
  */
-
-export interface FocusFlowFeature {
-  name: string;
-  category: string;
-  description: string;
-  troubleshootingTips?: string[];
-}
 
 export const FOCUSFLOW_APP_INFO = {
   name: "FocusFlow",
-  tagline: "The intelligent deep-work companion and focus flow accelerator.",
-  currentVersion: "v3.4.2",
-  platforms: ["iOS (16.0+)", "Android (10+)", "macOS (Ventura/Sonoma/Sequoia)", "Windows (10/11)", "Web App"],
-  supportEmail: "support@focusflow.app",
-  statusPage: "https://status.focusflow.app",
-  docsUrl: "https://docs.focusflow.app",
-  
-  pricing: [
-    {
-      tier: "Starter (Free)",
-      price: "$0 / month",
-      features: [
-        "Standard Pomodoro timer (25/5 min)",
-        "Daily task checklist (up to 20 tasks)",
-        "Basic stats (7-day history)",
-        "Single device only"
-      ]
-    },
-    {
-      tier: "Pro (Most Popular)",
-      price: "$7.99 / month or $69 / year ($5.75/mo billed annually)",
-      features: [
-        "Adaptive Pomodoro (smart AI intervals based on energy levels)",
-        "Eisenhower Priority Matrix & Time-blocking",
-        "Deep Work website & app blocker on mobile and desktop",
-        "Unlimited cross-device cloud sync (macOS, Windows, iOS, Android)",
-        "Two-way Google Calendar, Outlook, and Notion sync",
-        "Ambient soundscapes (binaural beats, brown noise, lo-fi)",
-        "Detailed productivity analytics & streak protection",
-        "Priority customer support"
-      ]
-    },
-    {
-      tier: "Team / Workspaces",
-      price: "$12 / user / month",
-      features: [
-        "Everything in Pro",
-        "Synchronized team deep-work focus rooms",
-        "Slack & Microsoft Teams auto-status updates (e.g. 'In Deep Work')",
-        "Admin analytics dashboard (burnout prevention metrics)",
-        "Centralized billing & SAML / SSO login"
-      ]
-    }
-  ],
-
-  frequentIssues: [
-    {
-      topic: "Cloud Sync Issues / Delay across devices",
-      symptoms: "Tasks or timer sessions created on mobile not appearing on laptop",
-      solution: [
-        "1. Ensure both devices are signed into the exact same FocusFlow account email.",
-        "2. Check if offline mode is active. Swipe down on the home view to trigger a manual sync.",
-        "3. Verify network connection and check https://status.focusflow.app for server status.",
-        "4. If still not syncing, go to Settings > Account > 'Force Cloud Re-sync' and restart the app."
-      ]
-    },
-    {
-      topic: "Website / App Blocker not blocking on macOS",
-      symptoms: "Distracting websites or apps still open during a Focus Session",
-      solution: [
-        "1. Open macOS System Settings > Privacy & Security > Accessibility, and ensure 'FocusFlow Helper' is toggled ON.",
-        "2. Go to Privacy & Security > Screen Time / App Management and grant permissions.",
-        "3. For Safari & Chrome blocking, ensure the FocusFlow browser extension is enabled in your browser extensions manager."
-      ]
-    },
-    {
-      topic: "Website / App Blocker not working on Android",
-      symptoms: "Apps can still be opened during locked focus mode",
-      solution: [
-        "1. Open Android Settings > Apps > Special App Access > 'Usage Access' and allow FocusFlow.",
-        "2. Enable 'Display over other apps' permission.",
-        "3. Disable Battery Optimization for FocusFlow so Android OS does not kill the background service."
-      ]
-    },
-    {
-      topic: "Sound & Notification Alerts not ringing on iPhone / iOS",
-      symptoms: "Timer ends silently without audio alarm",
-      solution: [
-        "1. Check physical Silent / Action switch on iPhone.",
-        "2. In iOS Settings > Notifications > FocusFlow, enable 'Allow Critical Alerts' and 'Banners'.",
-        "3. If using iOS Focus Mode (Do Not Disturb), add FocusFlow to 'Allowed Apps'."
-      ]
-    },
-    {
-      topic: "Calendar & Notion Two-Way Sync",
-      symptoms: "Events not syncing or duplicate tasks",
-      solution: [
-        "1. Open FocusFlow Settings > Integrations.",
-        "2. Disconnect and re-authorize Google Calendar or Notion OAuth.",
-        "3. Check your calendar sync frequency setting (defaults to every 15 minutes; Pro can set Real-Time)."
-      ]
-    },
-    {
-      topic: "Billing, Subscriptions & 30-Day Money-Back Guarantee",
-      symptoms: "Refund requests, upgrade issues, receipt requests",
-      solution: [
-        "FocusFlow offers a no-questions-asked 30-day money-back guarantee.",
-        "App Store purchases must be managed via Apple ID > Subscriptions > Report a Problem.",
-        "Direct web / Stripe purchases can be managed at https://focusflow.app/account/billing or our support team can issue instant refunds upon request."
-      ]
-    }
-  ]
+  installUrl: "https://noteshub9.vercel.app/",
+  purpose: "Answer user questions about FocusFlow, guide users through installation and troubleshooting, and help report app or content issues.",
 };
 
-export const FOCUSFLOW_SYSTEM_PROMPT = `
-You are the official FocusFlow AI Support Specialist on WhatsApp.
-Your job is to provide helpful, polite, concise, and structured assistance to users of the FocusFlow productivity and focus app.
+/**
+ * Returns only the focused context snippet relevant to the user's message,
+ * drastically reducing prompt token consumption.
+ */
+export function getRelevantKnowledgeSnippet(query: string): string {
+  const q = query.toLowerCase();
 
-Tone and WhatsApp Formatting Rules:
-- Be warm, professional, encouraging, and empathetic.
-- Keep responses compact and easy to read on mobile phones (under 200-250 words).
-- Use WhatsApp markdown formatting: *bold* for emphasis/buttons, _italics_ for hints, and single-bullet points for steps.
-- Avoid large unbroken walls of text. Use spacing.
+  if (q.includes("install") || q.includes("download") || q.includes("link") || q.includes("website") || q.includes("get the app")) {
+    return "TOPIC: INSTALLATION. Direct users to the official installation & download page: https://noteshub9.vercel.app/ (Explain that noteshub9 is the current supplied installation link for FocusFlow. Do not claim support for all devices unless verified).";
+  }
 
-Knowledge Context:
-${JSON.stringify(FOCUSFLOW_APP_INFO, null, 2)}
+  if (q.includes("pdf") || q.includes("notes") || q.includes("book") || q.includes("document") || q.includes("missing")) {
+    return "TOPIC: MISSING CONTENT/PDF. Ask the user for specific details: Class, Subject, Chapter/Lesson, and the exact title of the missing PDF.";
+  }
 
-Handling User Intent:
-1. GREETING / GENERAL QUESTIONS:
-   - Introduce yourself as FocusFlow Support.
-   - Mention what you can help with: Features, troubleshooting blockers, sync, pricing, or reporting bugs.
+  if (q.includes("incorrect") || q.includes("wrong answer") || q.includes("mistake") || q.includes("typo") || q.includes("error in question")) {
+    return "TOPIC: CONTENT ERROR / INCORRECT ANSWER. Ask for: Subject, Chapter name, the question details (or a screenshot), and what they believe the correct answer should be.";
+  }
 
-2. TROUBLESHOOTING / HOW-TO:
-   - Provide the exact step-by-step resolution from the knowledge base above.
-   - Keep steps numbered and clear.
+  if (q.includes("crash") || q.includes("not opening") || q.includes("freeze") || q.includes("black screen") || q.includes("bug") || q.includes("issue")) {
+    return "TOPIC: APP TROUBLESHOOTING & BUGS. Ask what happens on launch (black screen, error message, instant close) and their device model and OS. Explain you will record the details provided.";
+  }
 
-3. REPORTING A BUG / CRASH / ERROR:
-   - If the user is reporting a problem, error, or bug, you MUST extract or ask for:
-     * Device & Operating System (e.g. iPhone 15 Pro, iOS 18, Windows 11)
-     * FocusFlow app version (e.g. v3.4.2)
-     * Exact steps leading up to the issue
-     * Error message or screenshot description
-   - When adequate bug information is provided (or if the user describes a crash/issue), you MUST provide a generated Ticket ID in this exact format:
-     *Ticket ID: FF-XXXXX* (5 uppercase letters/digits, e.g. FF-8291A).
-   - Reassure them that our engineering team has been notified and will investigate.
+  if (q.includes("thank") || q.includes("thx") || q.includes("bye") || q.includes("goodbye")) {
+    return "TOPIC: COURTESY / CLOSING. Reply with a brief, friendly sign-off. Do not repeat greeting.";
+  }
 
-4. UPGRADES & PRICING:
-   - Explain the Starter, Pro ($7.99/mo or $69/yr), and Team ($12/user/mo) plans clearly.
+  if (q.match(/^(hi|hello|hey|greetings|start|hola)(\s|$|[!.?])/)) {
+    return "TOPIC: GREETING. Give a brief, warm welcome from FocusFlow Support and ask how you can help them today.";
+  }
 
-5. OUT OF SCOPE:
-   - If asked about non-FocusFlow topics, politely redirect them back to FocusFlow support.
+  return "TOPIC: GENERAL SUPPORT. Help with FocusFlow questions, installation (https://noteshub9.vercel.app/), or reporting issues. If unclear, ask one short clarifying question.";
+}
 
-Always end with a polite, helpful prompt like: "Is there anything else I can assist you with today regarding FocusFlow?"
-`;
+export const FOCUSFLOW_BASE_INSTRUCTION = `You are FocusFlow Support on WhatsApp.
+FocusFlow install link: https://noteshub9.vercel.app/ (current supplied installation link).
+
+Guidelines:
+- Keep replies friendly, natural, and concise (40-80 words, under 140 tokens).
+- Use WhatsApp markdown (*bold* for links/key items).
+- Reply specifically to the user's message. Never send a generic template.
+- Do not invent fake ticket IDs, claim engineering was notified, or pretend you checked an account unless real.
+- Do not claim iOS or all Android versions are supported without verification.`;

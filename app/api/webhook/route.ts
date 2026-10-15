@@ -189,7 +189,8 @@ export async function POST(req: NextRequest) {
               to: senderPhone,
               messageId: dispatchResult.messageId,
               details: {
-                ticketGenerated: botResult.detectedTicket ? botResult.detectedTicket.id : null,
+                modelUsed: botResult.modelUsed,
+                totalTokens: botResult.totalTokens,
                 dispatchSuccess: dispatchResult.success,
                 dispatchStatus: dispatchResult.status,
                 dispatchMode: dispatchResult.mode,

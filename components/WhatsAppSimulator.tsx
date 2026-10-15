@@ -14,24 +14,28 @@ interface Message {
 
 const PRESET_QUESTIONS = [
   {
-    label: "Blocker on macOS",
-    query: "My website blocker stopped working after updating to macOS Sequoia. How do I fix it?",
+    label: "Install FocusFlow",
+    query: "How do I install FocusFlow?",
   },
   {
-    label: "Report Crash (iOS)",
-    query: "The app crashed when starting a 50 min Pomodoro session on iPhone 15 Pro iOS 18.2.",
+    label: "App Not Opening",
+    query: "The app is not opening on my phone.",
   },
   {
-    label: "Sync Delay",
-    query: "Tasks I create on my Android 14 phone aren't syncing to my Windows 11 laptop.",
+    label: "Missing PDF",
+    query: "My PDF is missing for today's lesson.",
   },
   {
-    label: "Group Chat Question",
-    query: "Can we add the FocusFlow bot to our WhatsApp study group for shared Pomodoro sprints?",
+    label: "Incorrect Answer",
+    query: "I found an incorrect answer in one of the questions.",
   },
   {
-    label: "Pro vs Team Plans",
-    query: "What is the difference between FocusFlow Pro and the Team workspace tier?",
+    label: "Report Bug",
+    query: "I want to report a bug with the app.",
+  },
+  {
+    label: "Thank You",
+    query: "Thank you for the help!",
   },
 ];
 
@@ -44,7 +48,7 @@ export function WhatsAppSimulator({ onEventLogged }: WhatsAppSimulatorProps) {
     {
       id: "msg_init_1",
       sender: "bot",
-      text: "👋 Welcome to *FocusFlow Support* on WhatsApp! I can help you troubleshoot website blockers, cross-device sync, app crashes, or answer questions about Pro and Team plans.\n\nHow can I help you achieve deep focus today?",
+      text: "👋 Welcome to *FocusFlow Support*! I'm here to help you with app installation, troubleshooting, missing PDFs, or reporting content issues.\n\nOur official download page is: *https://noteshub9.vercel.app/*\n\nHow can I help you today?",
       time: "10:14 AM",
       status: "read",
     },

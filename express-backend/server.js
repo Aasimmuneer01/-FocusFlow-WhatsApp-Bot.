@@ -11,7 +11,11 @@ try {
 const express = require("express");
 const crypto = require("crypto");
 const { GoogleGenAI } = require("@google/genai");
-const { FOCUSFLOW_SYSTEM_PROMPT } = require("./focusFlowKnowledge");
+const {
+  FOCUSFLOW_APP_INFO,
+  getRelevantKnowledgeSnippet,
+  FOCUSFLOW_BASE_INSTRUCTION,
+} = require("./focusFlowKnowledge");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -44,17 +48,54 @@ function logConfigurationStatus() {
 
   console.log("=======================================================");
   console.log("🤖 FocusFlow WhatsApp Bot - Runtime Configuration:");
+  console.log(`   - Primary Model:           gemini-3.1-flash-lite (cost-optimized)`);
   console.log(`   - GEMINI_API_KEY:          ${sanitizeMask(GEMINI_API_KEY, 6)}`);
   console.log(`   - WHATSAPP_TOKEN:          ${sanitizeMask(WHATSAPP_TOKEN, 6)}`);
   console.log(`   - WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID ? WHATSAPP_PHONE_NUMBER_ID : "(not set)"}`);
   console.log(`   - WHATSAPP_VERIFY_TOKEN:   ${sanitizeMask(WHATSAPP_VERIFY_TOKEN, 4)}`);
   console.log(`   - WHATSAPP_APP_SECRET:     ${sanitizeMask(WHATSAPP_APP_SECRET, 4)}`);
-  console.log(`   - NODE_ENV:                ${process.env.NODE_ENV || "development"}`);
-  console.log(`   - VERCEL:                  ${Boolean(process.env.VERCEL)}`);
+  console.log(`   - App Install URL:         ${FOCUSFLOW_APP_INFO.installUrl}`);
   console.log("=======================================================");
 }
 
 logConfigurationStatus();
+
+// Deduplication tracking: prevents duplicate processing if Meta retries a webhook
+const processedMessages = new Map();
+
+function isDuplicateMessage(messageId) {
+  if (!messageId) return false;
+  const now = Date.now();
+  // Purge IDs older than 10 minutes
+  for (const [id, timestamp] of processedMessages.entries()) {
+    if (now - timestamp > 10 * 60 * 1000) {
+      processedMessages.delete(id);
+    }
+  }
+  if (processedMessages.has(messageId)) {
+    return true;
+  }
+  processedMessages.set(messageId, now);
+  return false;
+}
+
+// Circuit breaker for models experiencing 429 quota exhaustion or 503 unavailability
+const modelCooldowns = new Map();
+
+function isModelAvailable(modelName) {
+  const until = modelCooldowns.get(modelName);
+  if (!until) return true;
+  if (Date.now() > until) {
+    modelCooldowns.delete(modelName);
+    return true;
+  }
+  return false;
+}
+
+function setModelCooldown(modelName, durationMs = 60000) {
+  modelCooldowns.set(modelName, Date.now() + durationMs);
+  console.warn(`[CIRCUIT BREAKER] Model "${modelName}" cooled down for ${durationMs / 1000}s.`);
+}
 
 // Middleware: parse JSON and capture raw buffer for HMAC SHA-256 signature verification
 app.use(
@@ -80,7 +121,6 @@ const ai = new GoogleGenAI({
  */
 function verifySignature(req) {
   if (!WHATSAPP_APP_SECRET) {
-    // If APP_SECRET is not configured, skip HMAC check
     return true;
   }
 
@@ -154,38 +194,64 @@ async function markMessageRead(messageId) {
 }
 
 /**
- * Calls Gemini with a reliable multi-model fallback chain:
- * 1. Primary: gemini-3.8-flash
- * 2. Fallback: gemini-3.1-flash-lite (verified supported and available)
- * Logs explicit stages as requested: attempted, fallback attempted, reply generated.
+ * Safe, context-aware fallback response when all AI models fail or hit rate limits.
+ */
+function getSafeFallbackReply(userMessage) {
+  const q = String(userMessage || "").toLowerCase();
+
+  if (q.includes("install") || q.includes("download") || q.includes("link") || q.includes("website")) {
+    return "Hi! You can download FocusFlow and access its installation guide here: *https://noteshub9.vercel.app/* (Note: noteshub9 is the official installation page). Let us know if you have any questions during setup!";
+  }
+  if (q.includes("pdf") || q.includes("notes") || q.includes("missing")) {
+    return "To help locate missing study materials, please let us know the *Class*, *Subject*, *Lesson/Chapter*, and the *exact PDF title*. We will note these details down.";
+  }
+  if (q.includes("incorrect") || q.includes("wrong answer") || q.includes("error")) {
+    return "To help verify an incorrect answer, please provide the *Subject*, *Chapter*, and the specific *question text or screenshot*. We will make a note for review.";
+  }
+  if (q.includes("not opening") || q.includes("crash") || q.includes("freeze")) {
+    return "If FocusFlow is not opening, please let us know your *device model*, *OS version*, and whether you see a black screen or error code. We will note the issue.";
+  }
+  if (q.match(/^(hi|hello|hey|greetings)(\s|$|[!.?])/)) {
+    return "Hello! Welcome to FocusFlow Support. How can we help you today with the app, installation, or study content?";
+  }
+  if (q.includes("thank")) {
+    return "You're very welcome! Feel free to reach out anytime if you need more help with FocusFlow. Have a great day!";
+  }
+  return "FocusFlow Support: For app information and installation, visit *https://noteshub9.vercel.app/*. If you're reporting an issue or missing PDF, please share your details and we will note them down.";
+}
+
+/**
+ * Generates situation-aware, token-optimized replies.
+ * - Primary model: gemini-3.1-flash-lite (fast, low-cost)
+ * - Restricts maxOutputTokens to 160 (~80-140 tokens)
+ * - Injects ONLY the relevant knowledge snippet for the user's specific query
+ * - Circuit breaker avoids spamming quota-exhausted models
  */
 async function generateBotReply(senderPhone, messageText, senderName) {
-  const prompt = `
-${FOCUSFLOW_SYSTEM_PROMPT}
+  // Get ONLY the relevant snippet matching the query
+  const relevantSnippet = getRelevantKnowledgeSnippet(messageText);
 
-User Profile:
-- Phone / WhatsApp ID: ${senderPhone}
-- Name: ${senderName || "Valued User"}
+  const systemPrompt = `${FOCUSFLOW_BASE_INSTRUCTION}
 
-Incoming WhatsApp Message:
-"${messageText}"
+${relevantSnippet}
 
-Respond directly to the user as the FocusFlow WhatsApp Support Bot. Remember to:
-- Be clear, friendly, and structured.
-- Use WhatsApp markdown (*bold*, _italics_, bullet points).
-- If reporting a bug/crash, provide a generated Ticket ID like "*Ticket ID: FF-${Math.floor(10000 + Math.random() * 90000)}*" and reassurance that engineering is investigating.
-`;
+User: "${senderName || 'Student'}" (${senderPhone})`;
 
-  // Model chain: Primary is gemini-3.8-flash; Verified fallback is gemini-3.1-flash-lite
+  // Supported model chain: Primary is gemini-3.1-flash-lite; fallback is gemini-flash-latest
   const modelChain = [
-    { name: "gemini-3.8-flash", isFallback: false },
-    { name: "gemini-3.1-flash-lite", isFallback: true },
+    { name: "gemini-3.1-flash-lite", isFallback: false },
+    { name: "gemini-flash-latest", isFallback: true },
   ];
 
   for (const { name: modelName, isFallback } of modelChain) {
+    if (!isModelAvailable(modelName)) {
+      console.log(`[STAGE 2/4: MODEL SKIPPED] Model "${modelName}" is currently cooling down due to recent quota/availability errors.`);
+      continue;
+    }
+
     const modelStart = Date.now();
     if (isFallback) {
-      console.log(`[STAGE 2/4: GEMINI FALLBACK] Attempting verified fallback model "${modelName}" for sender ${senderPhone}...`);
+      console.log(`[STAGE 2/4: GEMINI FALLBACK] Attempting fallback model "${modelName}" for sender ${senderPhone}...`);
     } else {
       console.log(`[STAGE 2/4: GEMINI ATTEMPT] Attempting primary model "${modelName}" for sender ${senderPhone}...`);
     }
@@ -193,29 +259,37 @@ Respond directly to the user as the FocusFlow WhatsApp Support Bot. Remember to:
     try {
       const response = await ai.models.generateContent({
         model: modelName,
-        contents: prompt,
+        contents: messageText,
+        config: {
+          systemInstruction: systemPrompt,
+          maxOutputTokens: 160,
+          temperature: 0.6,
+        },
       });
 
       const replyText = response.text?.trim();
       if (replyText) {
         const elapsed = Date.now() - modelStart;
-        console.log(`[STAGE 2/4: REPLY GENERATED] Model "${modelName}" (${isFallback ? "fallback" : "primary"}) generated reply in ${elapsed}ms (${replyText.length} chars).`);
+        const totalTokens = response.usageMetadata?.totalTokenCount || "(n/a)";
+        console.log(`[STAGE 2/4: REPLY GENERATED] Model "${modelName}" (${isFallback ? "fallback" : "primary"}) generated reply in ${elapsed}ms | Total tokens: ${totalTokens}`);
         return replyText;
-      } else {
-        console.warn(`[STAGE 2/4: GEMINI EMPTY] Model "${modelName}" returned empty text. Trying next model...`);
       }
     } catch (err) {
       const elapsed = Date.now() - modelStart;
-      const status = err.status || err.code || "UNKNOWN_ERROR";
+      const status = err.status || err.code || "UNKNOWN";
       const errMsg = err.message || String(err);
       console.warn(`[STAGE 2/4: GEMINI ${isFallback ? "FALLBACK" : "PRIMARY"} FAILED] Model "${modelName}" failed after ${elapsed}ms with status ${status}: ${errMsg}`);
-      // Do not stop! Continue loop to next model in the fallback chain
+
+      // If quota exhausted (429) or unavailable (503), cool down model
+      if (status === 429 || status === 503 || String(errMsg).includes("quota") || String(errMsg).includes("demand")) {
+        setModelCooldown(modelName, 60000);
+      }
     }
   }
 
-  // Graceful fallback response preserving FocusFlow knowledge if all AI calls fail
-  console.warn("[STAGE 2/4: GEMINI EXHAUSTED] All AI models failed. Using built-in FocusFlow support reply.");
-  return "👋 Hello from *FocusFlow Support*! We received your message and our team is actively reviewing your request. For immediate assistance with sync, website blockers, or subscriptions, please check our help center at *https://docs.focusflow.app* or email our team at *support@focusflow.app*.";
+  // Graceful fallback response preserving FocusFlow facts if all AI models fail
+  console.warn("[STAGE 2/4: GEMINI EXHAUSTED] Using situation-aware FocusFlow fallback reply.");
+  return getSafeFallbackReply(messageText);
 }
 
 /**
@@ -223,7 +297,6 @@ Respond directly to the user as the FocusFlow WhatsApp Support Bot. Remember to:
  * Logs: WhatsApp send request, WhatsApp API response status, and WhatsApp message ID on success.
  */
 async function sendWhatsAppMessage(recipientPhone, textBody) {
-  // Validate credentials
   if (!WHATSAPP_TOKEN) {
     console.error("[STAGE 3/4: WHATSAPP ERROR] Cannot send message: WHATSAPP_TOKEN is missing in environment variables.");
     return { success: false, error: "Missing WHATSAPP_TOKEN" };
@@ -265,7 +338,6 @@ async function sendWhatsAppMessage(recipientPhone, textBody) {
     const elapsedMs = Date.now() - startTime;
     const data = await response.json().catch(() => ({}));
 
-    // Log WhatsApp API response status
     console.log(`[STAGE 4/4: WHATSAPP SEND RESPONSE] Meta Graph API returned HTTP ${response.status} ${response.statusText} in ${elapsedMs}ms.`);
 
     if (!response.ok) {
@@ -286,7 +358,6 @@ async function sendWhatsAppMessage(recipientPhone, textBody) {
       return { success: false, status: response.status, error: data };
     }
 
-    // Log WhatsApp message ID on success
     const messageId = data.messages?.[0]?.id || "(unknown-id)";
     console.log(`[STAGE 4/4: WHATSAPP SUCCESS] Reply delivered! WhatsApp Message ID: ${messageId}`);
     return { success: true, messageId, status: response.status, data };
@@ -312,6 +383,8 @@ app.get(["/", "/health"], (req, res) => {
     status: "healthy",
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
+    primaryModel: "gemini-3.1-flash-lite",
+    appWebsite: FOCUSFLOW_APP_INFO.installUrl,
     config: {
       hasGeminiKey: Boolean(GEMINI_API_KEY),
       hasWhatsAppToken: Boolean(WHATSAPP_TOKEN),
@@ -322,12 +395,10 @@ app.get(["/", "/health"], (req, res) => {
       hasAppSecret: Boolean(WHATSAPP_APP_SECRET),
     },
     metaApiVersion: "v21.0",
-    modelChain: ["gemini-3.8-flash (primary)", "gemini-3.1-flash-lite (verified fallback)"],
   });
 });
 
 // 2. Webhook Verification (GET /webhook)
-// Meta Developer Portal calls this during Webhook subscription setup
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -345,7 +416,6 @@ app.get("/webhook", (req, res) => {
 });
 
 // 3. Webhook Event Handler (POST /webhook)
-// Meta delivers incoming messages and status changes here
 app.post("/webhook", async (req, res) => {
   const startTime = Date.now();
 
@@ -357,14 +427,12 @@ app.post("/webhook", async (req, res) => {
 
   const body = req.body;
 
-  // Verify that payload comes from a WhatsApp Business Account
   if (!body || body.object !== "whatsapp_business_account" || !Array.isArray(body.entry)) {
     console.log("[WEBHOOK IGNORED] Payload is not a whatsapp_business_account event.");
     return res.status(200).json({ status: "IGNORED_NON_WHATSAPP" });
   }
 
   try {
-    // Process each entry in the incoming webhook batch
     for (const entry of body.entry) {
       for (const change of entry.changes || []) {
         const value = change.value;
@@ -376,12 +444,8 @@ app.post("/webhook", async (req, res) => {
             console.log(
               `[STATUS/READ NOTIFICATION - NO AI TRIGGER] Msg ID: ${statusObj.id} | Status: "${statusObj.status}" | Recipient: ${statusObj.recipient_id}`
             );
-            if (statusObj.errors && statusObj.errors.length > 0) {
-              console.error(`[STATUS ERROR DETAILS]`, statusObj.errors);
-            }
           }
-          // Explicitly continue to skip AI generation for status notifications
-          continue;
+          continue; // Skip AI generation for status notifications
         }
 
         // 2. Real Incoming Messages from WhatsApp Users
@@ -393,7 +457,12 @@ app.post("/webhook", async (req, res) => {
             const senderPhone = message.from;
             const messageId = message.id;
 
-            // Extract message text content
+            // Deduplication check: ignore if already processed
+            if (isDuplicateMessage(messageId)) {
+              console.log(`[DEDUPLICATION] Message ${messageId} already processed. Skipping duplicate.`);
+              continue;
+            }
+
             let textContent = "";
             if (message.type === "text" && message.text) {
               textContent = message.text.body;
@@ -418,7 +487,7 @@ app.post("/webhook", async (req, res) => {
             // Step 1: Mark message as read (blue ticks)
             await markMessageRead(messageId);
 
-            // Step 2: Generate response using Gemini AI (with verified fallback chain)
+            // Step 2: Generate response using low-cost Gemini 3.1 Flash-Lite
             // Awaited before returning HTTP 200
             const botReply = await generateBotReply(senderPhone, textContent, userName);
 
@@ -429,7 +498,7 @@ app.post("/webhook", async (req, res) => {
             if (!sendResult.success) {
               console.error(`[CRITICAL] Bot failed to dispatch reply to ${senderPhone}. Reason:`, sendResult.error);
             } else {
-              console.log(`✅ [BOT REPLIED SUCCESSFULLY] Outbound message delivered for ${senderPhone}.`);
+              console.log(`✅ [BOT REPLIED SUCCESSFULLY] Outbound message delivered to ${senderPhone}.`);
             }
           }
         }
@@ -439,7 +508,6 @@ app.post("/webhook", async (req, res) => {
     const totalElapsed = Date.now() - startTime;
     console.log(`[WEBHOOK COMPLETED] All messages processed in ${totalElapsed}ms. Returning HTTP 200 to Meta.`);
 
-    // CRITICAL: Return HTTP 200 ONLY AFTER processing promises have resolved
     return res.status(200).json({ status: "EVENT_PROCESSED", elapsedMs: totalElapsed });
   } catch (error) {
     console.error("[WEBHOOK EXCEPTION] Unhandled error processing webhook:", error);
