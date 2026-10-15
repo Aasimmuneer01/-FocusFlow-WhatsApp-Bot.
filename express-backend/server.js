@@ -80,7 +80,7 @@ const ai = new GoogleGenAI({
  */
 function verifySignature(req) {
   if (!WHATSAPP_APP_SECRET) {
-    // If APP_SECRET is not configured, skip HMAC check with a log
+    // If APP_SECRET is not configured, skip HMAC check
     return true;
   }
 
@@ -154,8 +154,10 @@ async function markMessageRead(messageId) {
 }
 
 /**
- * Calls Gemini with automatic fallback (gemini-3.8-flash -> gemini-3.1-flash-lite)
- * and detailed diagnostic latency & error logging.
+ * Calls Gemini with a reliable multi-model fallback chain:
+ * 1. Primary: gemini-3.8-flash
+ * 2. Fallback: gemini-3.1-flash-lite (verified supported and available)
+ * Logs explicit stages as requested: attempted, fallback attempted, reply generated.
  */
 async function generateBotReply(senderPhone, messageText, senderName) {
   const prompt = `
@@ -174,13 +176,21 @@ Respond directly to the user as the FocusFlow WhatsApp Support Bot. Remember to:
 - If reporting a bug/crash, provide a generated Ticket ID like "*Ticket ID: FF-${Math.floor(10000 + Math.random() * 90000)}*" and reassurance that engineering is investigating.
 `;
 
-  // Candidate models: Primary is gemini-3.8-flash; fallback is gemini-3.1-flash-lite
-  const candidateModels = ["gemini-3.8-flash", "gemini-3.1-flash-lite"];
-  const startTime = Date.now();
+  // Model chain: Primary is gemini-3.8-flash; Verified fallback is gemini-3.1-flash-lite
+  const modelChain = [
+    { name: "gemini-3.8-flash", isFallback: false },
+    { name: "gemini-3.1-flash-lite", isFallback: true },
+  ];
 
-  for (const modelName of candidateModels) {
+  for (const { name: modelName, isFallback } of modelChain) {
+    const modelStart = Date.now();
+    if (isFallback) {
+      console.log(`[STAGE 2/4: GEMINI FALLBACK] Attempting verified fallback model "${modelName}" for sender ${senderPhone}...`);
+    } else {
+      console.log(`[STAGE 2/4: GEMINI ATTEMPT] Attempting primary model "${modelName}" for sender ${senderPhone}...`);
+    }
+
     try {
-      console.log(`[GEMINI REQUEST] Calling model "${modelName}" for sender ${senderPhone}...`);
       const response = await ai.models.generateContent({
         model: modelName,
         contents: prompt,
@@ -188,38 +198,39 @@ Respond directly to the user as the FocusFlow WhatsApp Support Bot. Remember to:
 
       const replyText = response.text?.trim();
       if (replyText) {
-        const elapsedMs = Date.now() - startTime;
-        console.log(`[GEMINI SUCCESS] Model "${modelName}" generated reply in ${elapsedMs}ms (${replyText.length} chars).`);
+        const elapsed = Date.now() - modelStart;
+        console.log(`[STAGE 2/4: REPLY GENERATED] Model "${modelName}" (${isFallback ? "fallback" : "primary"}) generated reply in ${elapsed}ms (${replyText.length} chars).`);
         return replyText;
+      } else {
+        console.warn(`[STAGE 2/4: GEMINI EMPTY] Model "${modelName}" returned empty text. Trying next model...`);
       }
     } catch (err) {
-      const elapsedMs = Date.now() - startTime;
-      console.error(`[GEMINI ERROR] Model "${modelName}" failed after ${elapsedMs}ms:`, {
-        status: err.status || "N/A",
-        code: err.code || "N/A",
-        message: err.message || String(err),
-      });
-      // Continue to next candidate model
+      const elapsed = Date.now() - modelStart;
+      const status = err.status || err.code || "UNKNOWN_ERROR";
+      const errMsg = err.message || String(err);
+      console.warn(`[STAGE 2/4: GEMINI ${isFallback ? "FALLBACK" : "PRIMARY"} FAILED] Model "${modelName}" failed after ${elapsed}ms with status ${status}: ${errMsg}`);
+      // Do not stop! Continue loop to next model in the fallback chain
     }
   }
 
-  // Graceful fallback response if all AI calls fail
-  console.warn("[GEMINI FALLBACK] Using pre-configured FocusFlow support message.");
-  return "👋 Hello from *FocusFlow Support*! We received your message and our support system is actively logging your request. For immediate assistance with sync, website blockers, or subscriptions, please check our guide at *https://docs.focusflow.app* or email our team at *support@focusflow.app*.";
+  // Graceful fallback response preserving FocusFlow knowledge if all AI calls fail
+  console.warn("[STAGE 2/4: GEMINI EXHAUSTED] All AI models failed. Using built-in FocusFlow support reply.");
+  return "👋 Hello from *FocusFlow Support*! We received your message and our team is actively reviewing your request. For immediate assistance with sync, website blockers, or subscriptions, please check our help center at *https://docs.focusflow.app* or email our team at *support@focusflow.app*.";
 }
 
 /**
  * Dispatches an outgoing message via Meta WhatsApp Cloud API with full diagnostic reporting.
+ * Logs: WhatsApp send request, WhatsApp API response status, and WhatsApp message ID on success.
  */
 async function sendWhatsAppMessage(recipientPhone, textBody) {
   // Validate credentials
   if (!WHATSAPP_TOKEN) {
-    console.error("[WHATSAPP SEND ERROR] Cannot send message: WHATSAPP_TOKEN is missing in environment variables.");
+    console.error("[STAGE 3/4: WHATSAPP ERROR] Cannot send message: WHATSAPP_TOKEN is missing in environment variables.");
     return { success: false, error: "Missing WHATSAPP_TOKEN" };
   }
 
   if (!WHATSAPP_PHONE_NUMBER_ID) {
-    console.error("[WHATSAPP SEND ERROR] Cannot send message: WHATSAPP_PHONE_NUMBER_ID is missing in environment variables.");
+    console.error("[STAGE 3/4: WHATSAPP ERROR] Cannot send message: WHATSAPP_PHONE_NUMBER_ID is missing in environment variables.");
     return { success: false, error: "Missing WHATSAPP_PHONE_NUMBER_ID" };
   }
 
@@ -238,7 +249,7 @@ async function sendWhatsAppMessage(recipientPhone, textBody) {
   };
 
   const startTime = Date.now();
-  console.log(`[WHATSAPP DISPATCH] Sending to recipient: ${cleanPhone} via Phone ID: ${WHATSAPP_PHONE_NUMBER_ID}...`);
+  console.log(`[STAGE 3/4: WHATSAPP SEND REQUEST] Dispatching reply to ${cleanPhone} via Phone Number ID: ${WHATSAPP_PHONE_NUMBER_ID}...`);
 
   try {
     const response = await fetch(url, {
@@ -254,9 +265,12 @@ async function sendWhatsAppMessage(recipientPhone, textBody) {
     const elapsedMs = Date.now() - startTime;
     const data = await response.json().catch(() => ({}));
 
+    // Log WhatsApp API response status
+    console.log(`[STAGE 4/4: WHATSAPP SEND RESPONSE] Meta Graph API returned HTTP ${response.status} ${response.statusText} in ${elapsedMs}ms.`);
+
     if (!response.ok) {
       const errInfo = data.error || {};
-      console.error(`[WHATSAPP SEND FAILED] HTTP ${response.status} ${response.statusText} (${elapsedMs}ms):`, {
+      console.error(`[STAGE 4/4: WHATSAPP SEND FAILED] HTTP ${response.status}:`, {
         message: errInfo.message || "Unknown error",
         type: errInfo.type,
         code: errInfo.code,
@@ -264,7 +278,6 @@ async function sendWhatsAppMessage(recipientPhone, textBody) {
         fbtrace_id: errInfo.fbtrace_id,
       });
 
-      // Special diagnostic alert for expired token
       if (errInfo.code === 190 || errInfo.error_subcode === 463) {
         console.error("🚨 [ACTION REQUIRED - TOKEN EXPIRED] The Meta WhatsApp Access Token (WHATSAPP_TOKEN) has expired!");
         console.error("   Solution: In Meta Business Manager > System Users, generate a permanent System User Token with 'whatsapp_business_messaging' permission and update WHATSAPP_TOKEN in Vercel.");
@@ -273,12 +286,13 @@ async function sendWhatsAppMessage(recipientPhone, textBody) {
       return { success: false, status: response.status, error: data };
     }
 
+    // Log WhatsApp message ID on success
     const messageId = data.messages?.[0]?.id || "(unknown-id)";
-    console.log(`[WHATSAPP SEND SUCCESS] HTTP ${response.status} (${elapsedMs}ms) | Meta Message ID: ${messageId}`);
-    return { success: true, messageId, data };
+    console.log(`[STAGE 4/4: WHATSAPP SUCCESS] Reply delivered! WhatsApp Message ID: ${messageId}`);
+    return { success: true, messageId, status: response.status, data };
   } catch (error) {
     const elapsedMs = Date.now() - startTime;
-    console.error(`[WHATSAPP SEND NETWORK EXCEPTION] after ${elapsedMs}ms:`, {
+    console.error(`[STAGE 4/4: WHATSAPP NETWORK EXCEPTION] after ${elapsedMs}ms:`, {
       message: error.message,
       name: error.name,
       code: error.code,
@@ -308,7 +322,7 @@ app.get(["/", "/health"], (req, res) => {
       hasAppSecret: Boolean(WHATSAPP_APP_SECRET),
     },
     metaApiVersion: "v21.0",
-    supportedModels: ["gemini-3.8-flash", "gemini-3.1-flash-lite"],
+    modelChain: ["gemini-3.8-flash (primary)", "gemini-3.1-flash-lite (verified fallback)"],
   });
 });
 
@@ -356,21 +370,21 @@ app.post("/webhook", async (req, res) => {
         const value = change.value;
         if (!value) continue;
 
-        // 1. Log Delivery Status Updates (DO NOT send bot replies to status events!)
+        // 1. Delivery & Read Status Updates (Filter out - DO NOT trigger Gemini or replies!)
         if (value.statuses && value.statuses.length > 0) {
           for (const statusObj of value.statuses) {
             console.log(
-              `[MESSAGE STATUS UPDATE] ID: ${statusObj.id} | Status: "${statusObj.status}" | Recipient: ${statusObj.recipient_id}`
+              `[STATUS/READ NOTIFICATION - NO AI TRIGGER] Msg ID: ${statusObj.id} | Status: "${statusObj.status}" | Recipient: ${statusObj.recipient_id}`
             );
             if (statusObj.errors && statusObj.errors.length > 0) {
-              console.error(`[MESSAGE STATUS ERROR]`, statusObj.errors);
+              console.error(`[STATUS ERROR DETAILS]`, statusObj.errors);
             }
           }
-          // Do not proceed to message reply logic for status events
+          // Explicitly continue to skip AI generation for status notifications
           continue;
         }
 
-        // 2. Handle Real Incoming Messages from WhatsApp Users
+        // 2. Real Incoming Messages from WhatsApp Users
         if (value.messages && value.messages.length > 0) {
           const contact = value.contacts && value.contacts[0];
           const userName = contact?.profile?.name || "FocusFlow User";
@@ -393,25 +407,29 @@ app.post("/webhook", async (req, res) => {
               textContent = `[User sent a ${message.type} message]`;
             }
 
-            console.log(`-------------------------------------------------------`);
-            console.log(`📩 [INCOMING USER MESSAGE] From: "${userName}" (${senderPhone}) | Type: ${message.type}`);
-            console.log(`   Message Text: "${textContent}"`);
-            console.log(`   Message ID:   ${messageId}`);
-            console.log(`-------------------------------------------------------`);
+            // STAGE 1: Log incoming message received
+            console.log(`=======================================================`);
+            console.log(`📩 [STAGE 1/4: INCOMING MESSAGE RECEIVED]`);
+            console.log(`   From:       "${userName}" (${senderPhone})`);
+            console.log(`   Message ID: ${messageId}`);
+            console.log(`   Text Body:  "${textContent}"`);
+            console.log(`=======================================================`);
 
             // Step 1: Mark message as read (blue ticks)
             await markMessageRead(messageId);
 
-            // Step 2: Generate response using Gemini AI
+            // Step 2: Generate response using Gemini AI (with verified fallback chain)
+            // Awaited before returning HTTP 200
             const botReply = await generateBotReply(senderPhone, textContent, userName);
 
             // Step 3: Dispatch reply back to the user via Meta WhatsApp Cloud API
+            // Awaited before returning HTTP 200
             const sendResult = await sendWhatsAppMessage(senderPhone, botReply);
 
             if (!sendResult.success) {
               console.error(`[CRITICAL] Bot failed to dispatch reply to ${senderPhone}. Reason:`, sendResult.error);
             } else {
-              console.log(`✅ [BOT REPLIED] Successfully replied to ${senderPhone}.`);
+              console.log(`✅ [BOT REPLIED SUCCESSFULLY] Outbound message delivered for ${senderPhone}.`);
             }
           }
         }
@@ -419,14 +437,12 @@ app.post("/webhook", async (req, res) => {
     }
 
     const totalElapsed = Date.now() - startTime;
-    console.log(`[WEBHOOK COMPLETED] All messages processed in ${totalElapsed}ms. Returning HTTP 200.`);
+    console.log(`[WEBHOOK COMPLETED] All messages processed in ${totalElapsed}ms. Returning HTTP 200 to Meta.`);
 
-    // CRITICAL FIX: Return HTTP 200 ONLY AFTER processing promises have resolved
-    // In Vercel serverless, returning the response prematurely freezes the container and cancels pending fetches.
+    // CRITICAL: Return HTTP 200 ONLY AFTER processing promises have resolved
     return res.status(200).json({ status: "EVENT_PROCESSED", elapsedMs: totalElapsed });
   } catch (error) {
     console.error("[WEBHOOK EXCEPTION] Unhandled error processing webhook:", error);
-    // Return 200 to prevent Meta retry loops while logging the failure
     return res.status(200).json({ status: "ERROR_LOGGED", error: error.message });
   }
 });

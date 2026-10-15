@@ -94,7 +94,7 @@ export async function sendWhatsAppTextMessage(
   };
 
   const startTime = Date.now();
-  console.log(`[WHATSAPP DISPATCH] Sending to ${cleanPhone} via Phone ID: ${phoneNumberId}...`);
+  console.log(`[STAGE 3/4: WHATSAPP SEND REQUEST] Dispatching to ${cleanPhone} via Phone ID: ${phoneNumberId}...`);
 
   try {
     const response = await fetch(endpoint, {
@@ -110,9 +110,11 @@ export async function sendWhatsAppTextMessage(
     const elapsedMs = Date.now() - startTime;
     const data = await response.json().catch(() => ({}));
 
+    console.log(`[STAGE 4/4: WHATSAPP SEND RESPONSE] Meta Graph API returned HTTP ${response.status} in ${elapsedMs}ms.`);
+
     if (!response.ok) {
       const errInfo = data.error || {};
-      console.error(`[WHATSAPP SEND FAILED] HTTP ${response.status} (${elapsedMs}ms):`, {
+      console.error(`[STAGE 4/4: WHATSAPP SEND FAILED] HTTP ${response.status} (${elapsedMs}ms):`, {
         message: errInfo.message,
         type: errInfo.type,
         code: errInfo.code,
@@ -132,7 +134,7 @@ export async function sendWhatsAppTextMessage(
     }
 
     const messageId = data.messages?.[0]?.id || `wamid.${Date.now()}`;
-    console.log(`[WHATSAPP SEND SUCCESS] HTTP ${response.status} (${elapsedMs}ms) | Meta Message ID: ${messageId}`);
+    console.log(`[STAGE 4/4: WHATSAPP SUCCESS] Reply delivered! WhatsApp Message ID: ${messageId}`);
     return {
       success: true,
       messageId,

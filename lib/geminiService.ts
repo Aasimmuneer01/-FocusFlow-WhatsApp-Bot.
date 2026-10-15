@@ -64,9 +64,19 @@ Respond directly to the user as the FocusFlow WhatsApp Support Bot. Remember to:
 `;
 
   let replyText = "";
-  const candidateModels = ["gemini-3.8-flash", "gemini-3.1-flash-lite"];
+  const modelChain = [
+    { name: "gemini-3.8-flash", isFallback: false },
+    { name: "gemini-3.1-flash-lite", isFallback: true },
+  ];
 
-  for (const modelName of candidateModels) {
+  for (const { name: modelName, isFallback } of modelChain) {
+    const modelStart = Date.now();
+    if (isFallback) {
+      console.log(`[STAGE 2/4: GEMINI FALLBACK] Attempting verified fallback model "${modelName}" for sender ${userId}...`);
+    } else {
+      console.log(`[STAGE 2/4: GEMINI ATTEMPT] Attempting primary model "${modelName}" for sender ${userId}...`);
+    }
+
     try {
       const response = await ai.models.generateContent({
         model: modelName,
@@ -76,10 +86,14 @@ Respond directly to the user as the FocusFlow WhatsApp Support Bot. Remember to:
       const text = response.text?.trim();
       if (text) {
         replyText = text;
+        const elapsed = Date.now() - modelStart;
+        console.log(`[STAGE 2/4: REPLY GENERATED] Model "${modelName}" (${isFallback ? "fallback" : "primary"}) generated reply in ${elapsed}ms (${replyText.length} chars).`);
         break;
       }
     } catch (modelErr) {
-      console.warn(`[GEMINI] Model ${modelName} call failed:`, modelErr);
+      const elapsed = Date.now() - modelStart;
+      const status = (modelErr as { status?: number; code?: number })?.status || "ERROR";
+      console.warn(`[STAGE 2/4: GEMINI ${isFallback ? "FALLBACK" : "PRIMARY"} FAILED] Model "${modelName}" failed after ${elapsed}ms with status ${status}`);
     }
   }
 

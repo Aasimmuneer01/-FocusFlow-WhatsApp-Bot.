@@ -149,7 +149,15 @@ export async function POST(req: NextRequest) {
               userText = `[Sent a ${message.type} attachment]`;
             }
 
-            // Log incoming message
+            // STAGE 1: Log incoming message received
+            console.log(`=======================================================`);
+            console.log(`📩 [STAGE 1/4: INCOMING MESSAGE RECEIVED]`);
+            console.log(`   From:       "${userName}" (${senderPhone})`);
+            console.log(`   Message ID: ${messageId}`);
+            console.log(`   Text Body:  "${userText}"`);
+            console.log(`=======================================================`);
+
+            // Log incoming message in storage
             botStore.addLog({
               timestamp: new Date().toISOString(),
               method: "POST",
