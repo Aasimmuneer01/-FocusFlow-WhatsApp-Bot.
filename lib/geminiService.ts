@@ -27,7 +27,8 @@ export interface GeminiBotResult {
 
 /**
  * Generates an empathetic and expert response for FocusFlow WhatsApp users
- * using Gemini 3.8 Flash, maintaining a brief conversation context.
+ * using Gemini (gemini-3.8-flash with fallback to gemini-3.1-flash-lite),
+ * maintaining a brief conversation context.
  */
 export async function generateSupportReply(
   userId: string,
@@ -35,8 +36,7 @@ export async function generateSupportReply(
   userName?: string
 ): Promise<GeminiBotResult> {
   const history = botStore.getConversationHistory(userId);
-  
-  // Format past dialogue for context
+
   const historyFormatted = history
     .map((turn) => `${turn.role === "user" ? "User" : "FocusFlow Support"}: ${turn.text}`)
     .join("\n");
@@ -63,91 +63,109 @@ Respond directly to the user as the FocusFlow WhatsApp Support Bot. Remember to:
   3) Confirm that our engineering team has been logged this ticket.
 `;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: fullPrompt,
-    });
+  let replyText = "";
+  const candidateModels = ["gemini-3.8-flash", "gemini-3.1-flash-lite"];
 
-    const replyText = response.text?.trim() || "Thank you for reaching out to FocusFlow Support! How can I assist you with your focus sessions or account today?";
-
-    // Record the turn in conversation memory
-    botStore.addConversationTurn(userId, "user", userMessage);
-    botStore.addConversationTurn(userId, "model", replyText);
-
-    // Check if a ticket was generated in the reply text
-    const ticketMatch = replyText.match(/Ticket ID:\s*([A-Z0-9\-]+)/i);
-    let detectedTicket = undefined;
-
-    const lowerQuery = userMessage.toLowerCase();
-    const isProblem =
-      ticketMatch ||
-      lowerQuery.includes("bug") ||
-      lowerQuery.includes("crash") ||
-      lowerQuery.includes("freeze") ||
-      lowerQuery.includes("not working") ||
-      lowerQuery.includes("error") ||
-      lowerQuery.includes("failed") ||
-      lowerQuery.includes("stopped") ||
-      lowerQuery.includes("broken") ||
-      lowerQuery.includes("sync");
-
-    if (isProblem) {
-      const ticketId = ticketMatch ? ticketMatch[1].replace(/[*_]/g, "") : `FF-${Math.floor(10000 + Math.random() * 90000)}`;
-      
-      let category: "bug" | "sync_issue" | "billing" | "feature_request" | "general_inquiry" = "bug";
-      if (lowerQuery.includes("sync") || lowerQuery.includes("cloud")) category = "sync_issue";
-      else if (lowerQuery.includes("refund") || lowerQuery.includes("charge") || lowerQuery.includes("subscription")) category = "billing";
-      else if (lowerQuery.includes("feature") || lowerQuery.includes("add support")) category = "feature_request";
-
-      let severity: "critical" | "high" | "medium" | "low" = "medium";
-      if (lowerQuery.includes("crash") || lowerQuery.includes("data loss") || lowerQuery.includes("charge")) severity = "high";
-      if (lowerQuery.includes("unable to open") || lowerQuery.includes("infinite loop")) severity = "critical";
-
-      // Detect OS/Device hint
-      let osDevice = undefined;
-      if (lowerQuery.includes("mac") || lowerQuery.includes("sequoia") || lowerQuery.includes("macos")) osDevice = "macOS";
-      else if (lowerQuery.includes("ios") || lowerQuery.includes("iphone") || lowerQuery.includes("ipad")) osDevice = "iOS / iPhone";
-      else if (lowerQuery.includes("android") || lowerQuery.includes("samsung") || lowerQuery.includes("pixel")) osDevice = "Android";
-      else if (lowerQuery.includes("windows") || lowerQuery.includes("pc")) osDevice = "Windows";
-
-      detectedTicket = {
-        id: ticketId,
-        category,
-        title: userMessage.slice(0, 80) + (userMessage.length > 80 ? "..." : ""),
-        severity,
-        osDevice: osDevice || "Unspecified",
-        appVersion: "v3.4.2 (Latest)",
-      };
-
-      // Add to store
-      botStore.addTicket({
-        id: ticketId,
-        userId,
-        userName,
-        category,
-        title: detectedTicket.title,
-        description: userMessage,
-        osDevice: detectedTicket.osDevice,
-        appVersion: detectedTicket.appVersion,
-        severity,
-        status: "open",
-        source: "whatsapp",
-        rawQuery: userMessage,
+  for (const modelName of candidateModels) {
+    try {
+      const response = await ai.models.generateContent({
+        model: modelName,
+        contents: fullPrompt,
       });
-    }
 
-    return {
-      replyText,
-      detectedTicket,
-    };
-  } catch (error) {
-    console.error("Gemini API generation error:", error);
-    const fallbackText = "Hello from FocusFlow Support! We are currently experiencing a brief connection delay to our knowledge server. For immediate assistance with sync, blockers, or subscriptions, please visit *https://docs.focusflow.app* or email *support@focusflow.app*.";
-    botStore.addConversationTurn(userId, "user", userMessage);
-    botStore.addConversationTurn(userId, "model", fallbackText);
-    return {
-      replyText: fallbackText,
-    };
+      const text = response.text?.trim();
+      if (text) {
+        replyText = text;
+        break;
+      }
+    } catch (modelErr) {
+      console.warn(`[GEMINI] Model ${modelName} call failed:`, modelErr);
+    }
   }
+
+  if (!replyText) {
+    replyText =
+      "Hello from FocusFlow Support! We are currently experiencing a brief connection delay to our knowledge server. For immediate assistance with sync, blockers, or subscriptions, please visit *https://docs.focusflow.app* or email *support@focusflow.app*.";
+  }
+
+  // Record conversation turn
+  botStore.addConversationTurn(userId, "user", userMessage);
+  botStore.addConversationTurn(userId, "model", replyText);
+
+  // Check if a ticket was generated in the reply text
+  const ticketMatch = replyText.match(/Ticket ID:\s*([A-Z0-9\-]+)/i);
+  let detectedTicket = undefined;
+
+  const lowerQuery = userMessage.toLowerCase();
+  const isProblem =
+    ticketMatch ||
+    lowerQuery.includes("bug") ||
+    lowerQuery.includes("crash") ||
+    lowerQuery.includes("freeze") ||
+    lowerQuery.includes("not working") ||
+    lowerQuery.includes("error") ||
+    lowerQuery.includes("failed") ||
+    lowerQuery.includes("stopped") ||
+    lowerQuery.includes("broken") ||
+    lowerQuery.includes("sync");
+
+  if (isProblem) {
+    const ticketId = ticketMatch
+      ? ticketMatch[1].replace(/[*_]/g, "")
+      : `FF-${Math.floor(10000 + Math.random() * 90000)}`;
+
+    let category: "bug" | "sync_issue" | "billing" | "feature_request" | "general_inquiry" = "bug";
+    if (lowerQuery.includes("sync") || lowerQuery.includes("cloud")) category = "sync_issue";
+    else if (
+      lowerQuery.includes("refund") ||
+      lowerQuery.includes("charge") ||
+      lowerQuery.includes("subscription")
+    )
+      category = "billing";
+    else if (lowerQuery.includes("feature") || lowerQuery.includes("add support"))
+      category = "feature_request";
+
+    let severity: "critical" | "high" | "medium" | "low" = "medium";
+    if (lowerQuery.includes("crash") || lowerQuery.includes("data loss") || lowerQuery.includes("charge"))
+      severity = "high";
+    if (lowerQuery.includes("unable to open") || lowerQuery.includes("infinite loop")) severity = "critical";
+
+    let osDevice = undefined;
+    if (lowerQuery.includes("mac") || lowerQuery.includes("sequoia") || lowerQuery.includes("macos"))
+      osDevice = "macOS";
+    else if (lowerQuery.includes("ios") || lowerQuery.includes("iphone") || lowerQuery.includes("ipad"))
+      osDevice = "iOS / iPhone";
+    else if (lowerQuery.includes("android") || lowerQuery.includes("samsung") || lowerQuery.includes("pixel"))
+      osDevice = "Android";
+    else if (lowerQuery.includes("windows") || lowerQuery.includes("pc")) osDevice = "Windows";
+
+    detectedTicket = {
+      id: ticketId,
+      category,
+      title: userMessage.slice(0, 80) + (userMessage.length > 80 ? "..." : ""),
+      severity,
+      osDevice: osDevice || "Unspecified",
+      appVersion: "v3.4.2 (Latest)",
+    };
+
+    botStore.addTicket({
+      id: ticketId,
+      userId,
+      userName,
+      category,
+      title: detectedTicket.title,
+      description: userMessage,
+      osDevice: detectedTicket.osDevice,
+      appVersion: detectedTicket.appVersion,
+      severity,
+      status: "open",
+      source: "whatsapp",
+      rawQuery: userMessage,
+    });
+  }
+
+  return {
+    replyText,
+    detectedTicket,
+  };
 }

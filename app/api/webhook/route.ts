@@ -20,7 +20,8 @@ export async function GET(req: NextRequest) {
   const token = url.searchParams.get("hub.verify_token");
   const challenge = url.searchParams.get("hub.challenge");
 
-  const expectedToken = process.env.WHATSAPP_VERIFY_TOKEN || "focusflow_secure_webhook_token_2026";
+  const expectedToken =
+    (process.env.WHATSAPP_VERIFY_TOKEN || process.env.VERIFY_TOKEN || "focusflow_secure_webhook_token_2026").trim();
 
   if (mode === "subscribe" && token === expectedToken) {
     botStore.addLog({
@@ -65,10 +66,11 @@ export async function GET(req: NextRequest) {
  * Handles incoming WhatsApp messages, user interactions, and message delivery status updates.
  */
 export async function POST(req: NextRequest) {
+  const startTime = Date.now();
   try {
     const rawBody = await req.text();
     const signatureHeader = req.headers.get("x-hub-signature-256");
-    const appSecret = process.env.WHATSAPP_APP_SECRET;
+    const appSecret = (process.env.WHATSAPP_APP_SECRET || process.env.APP_SECRET || "").trim();
 
     // Optional cryptographic signature verification
     const isValidSignature = verifyMetaSignature(rawBody, signatureHeader, appSecret);
@@ -101,7 +103,7 @@ export async function POST(req: NextRequest) {
         const value = change.value;
         if (!value) continue;
 
-        // 1. Handle Message Status Updates (sent, delivered, read, failed)
+        // 1. Handle Message Status Updates (sent, delivered, read, failed) - DO NOT reply to status events!
         if (value.statuses && value.statuses.length > 0) {
           for (const statusObj of value.statuses) {
             botStore.addLog({
@@ -121,9 +123,11 @@ export async function POST(req: NextRequest) {
               },
             });
           }
+          // Do not execute user reply logic for status notifications
+          continue;
         }
 
-        // 2. Handle Incoming Messages from Users
+        // 2. Handle Real Incoming Messages from Users
         if (value.messages && value.messages.length > 0) {
           const contact = value.contacts?.[0];
           const userName = contact?.profile?.name || "FocusFlow User";
@@ -161,7 +165,7 @@ export async function POST(req: NextRequest) {
             // Mark message as read in WhatsApp (sends double blue ticks)
             await markWhatsAppMessageAsRead(messageId);
 
-            // Generate reply using Gemini 3.8 Flash loaded with FocusFlow knowledge
+            // Generate reply using Gemini with fallback models
             const botResult = await generateSupportReply(senderPhone, userText, userName);
 
             // Dispatch reply via Meta WhatsApp Cloud API
@@ -179,6 +183,7 @@ export async function POST(req: NextRequest) {
               details: {
                 ticketGenerated: botResult.detectedTicket ? botResult.detectedTicket.id : null,
                 dispatchSuccess: dispatchResult.success,
+                dispatchStatus: dispatchResult.status,
                 dispatchMode: dispatchResult.mode,
                 error: dispatchResult.error,
               },
@@ -188,11 +193,10 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Always respond with 200 OK quickly so Meta doesn't retry the webhook call
-    return NextResponse.json({ status: "EVENT_RECEIVED" }, { status: 200 });
+    const elapsed = Date.now() - startTime;
+    return NextResponse.json({ status: "EVENT_PROCESSED", elapsedMs: elapsed }, { status: 200 });
   } catch (error) {
     console.error("Webhook processing error:", error);
-    // Return 200 to prevent Meta retry loop while logging internal error
     return NextResponse.json({ status: "error_logged", error: String(error) }, { status: 200 });
   }
 }
