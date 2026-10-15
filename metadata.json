@@ -1,0 +1,6 @@
+{
+  "name": "FocusFlow WhatsApp Support Bot & Webhook Backend",
+  "description": "Production-ready Meta WhatsApp Cloud API backend with Gemini AI support agent, webhook verification, message status tracking, issue ticketing, and Vercel deployment templates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
